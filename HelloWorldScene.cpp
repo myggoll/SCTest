@@ -1,13 +1,58 @@
+#include "xType.h"
 #include "HelloWorldScene.h"
 
-USING_NS_CC;
+bool Block::init()
+{
+	baseNode_ = CSLoader::createNode("Block.csb");
+	if (baseNode_ == nullptr)
+	{
+		log("Error - Not Find .csb : Block.csb");
+		return false;
+	}
+	this->addChild(baseNode_);
 
-#ifndef max
-#define max(a,b) (((a) > (b)) ? (a) : (b))
-#endif
-#ifndef min
-#define min(a,b) (((a) < (b)) ? (a) : (b))
-#endif
+	return true;
+}
+
+b2Fixture* Block::createBody_Box2d(Node_Tag _tag, b2World* _world)
+{
+	Sprite* collisionBox = (Sprite*)baseNode_->getChildByName("CollisionBox");
+
+	Vec2 bodyPos = this->convertToWorldSpace(collisionBox->getPosition());
+	bodyPos = this->getParent()->convertToNodeSpace(bodyPos);
+
+	b2BodyDef block_body_def;
+	block_body_def.type = b2_dynamicBody;
+	block_body_def.position.Set(SCREEN_TO_BOX2D(bodyPos.x), SCREEN_TO_BOX2D(bodyPos.y));
+	block_body_def.userData = collisionBox;
+
+	b2Body* pBody = _world->CreateBody(&block_body_def);
+
+	b2PolygonShape block_polygon;
+	block_polygon.SetAsBox(SCREEN_TO_BOX2D(collisionBox->getScaleX()/2), SCREEN_TO_BOX2D(collisionBox->getScaleY()/2));
+	b2FixtureDef block_fixture_def;
+	block_fixture_def.shape = &block_polygon;
+	block_fixture_def.isSensor = true;
+
+	switch (_tag)
+	{
+	case Node_Tag::Tag_MyBlock :
+		{
+			block_fixture_def.filter.categoryBits = ProjectileCategory_My;
+			block_fixture_def.filter.maskBits = 0xFFFF ^ (BlockCategory_My | ProjectileCategory_My | SkillAttackAreaCategory_My);
+		}
+		break;
+	case Node_Tag::Tag_OtherBlock:
+		{
+			block_fixture_def.filter.categoryBits = ProjectileCategory_Other;
+			block_fixture_def.filter.maskBits = 0xFFFF ^ (BlockCategory_Other | ProjectileCategory_Other | SkillAttackAreaCategory_Other);
+		}
+		break;
+	}
+
+
+	return pBody->CreateFixture(&block_fixture_def);
+}
 
 
 Scene* HelloWorld::createScene()
@@ -23,6 +68,16 @@ Scene* HelloWorld::createScene()
 
     // return the scene
     return scene;
+}
+
+void MyContactListener::BeginContact( b2Contact* contact )
+{
+	log("Begin Contact");
+}
+
+void MyContactListener::EndContact( b2Contact* contact )
+{
+	log("End Contact");
 }
 
 // on "init" you need to initialize your instance
@@ -56,69 +111,63 @@ bool HelloWorld::init()
     menu->setPosition(Vec2::ZERO);
     this->addChild(menu, 1);
 
-    /////////////////////////////
-    // 3. add your codes below...
+	//Create World
+	b2Vec2 gravity = b2Vec2(0.0f, 0.0f);
+	world_ = new b2World(gravity);
+	world_->SetAllowSleeping(false);
 
-    // add a label shows "Hello World"
-    // create and initialize a label
-    
-    auto label = LabelTTF::create("Hello World", "Arial", 24);
-    
-    // position the label on the center of the screen
-    label->setPosition(Vec2(origin.x + visibleSize.width/2,
-                            origin.y + visibleSize.height - label->getContentSize().height));
+	b2BodyDef screen_body_def;
+	screen_body_def.position.Set(0.0f, 0.0f);
+	screen_body_ = world_->CreateBody(&screen_body_def);
 
-    // add the label as a child to this layer
-    this->addChild(label, 1);
+	world_->SetDebugDraw(&m_debugDraw);
+	uint32 flags = 0;
+	flags += b2Draw::e_shapeBit;
+	flags += b2Draw::e_jointBit;
+	flags += b2Draw::e_centerOfMassBit;
+	flags += b2Draw::e_pairBit;
+	m_debugDraw.SetFlags(flags);
 
-    // add "HelloWorld" splash screen"
-    auto sprite = Sprite::create("HelloWorld.png");
-    // position the sprite on the center of the screen
-	sprite->setPosition(Vec2(visibleSize.width / 2 + origin.x - 100, visibleSize.height / 2 + origin.y - 100));
-	//sprite->setVisible(false);
-    // add the sprite as a child to this layer
-    this->addChild(sprite, 1);
-
-	auto sprite2 = Sprite::create("HelloWorld.png");
-	sprite2->setPosition(Vec2(visibleSize.width / 2 + origin.x + 100, visibleSize.height / 2 + origin.y + 100));
-	this->addChild(sprite2, 1);
-
-	Rect intersection;
-	Rect r1 = sprite->boundingBox();
-	Rect r2 = sprite2->boundingBox();
-	intersection = CCRectMake(max(r1.getMinX(), r2.getMinX()), max(r1.getMinY(), r2.getMinY()), 0, 0);
-	intersection.size.width = min(r1.getMaxX(), r2.getMaxX()) - intersection.getMinX();
-	intersection.size.height = min(r1.getMaxY(), r2.getMaxY()) - intersection.getMinY();
-
-	unsigned int x = intersection.origin.x;
-	unsigned int y = intersection.origin.y;
-	unsigned int w = intersection.size.width;
-	unsigned int h = intersection.size.height;
-	unsigned int numPixels = w * h;
+	contactListener_ = new MyContactListener();
+	world_->SetContactListener(contactListener_);
 
 
-	RenderTexture* pRT = RenderTexture::create(visibleSize.width, visibleSize.height);
-	//pRT->setPosition(this->getAnchorPointInPoints().x - 150, this->getAnchorPointInPoints().y - 150);
+	this->schedule(schedule_selector(HelloWorld::tick));
 
-	pRT->beginWithClear(0, 0, 0, 0);
-	glColorMask(1, 0, 0, 1);
-	sprite->visit();
-	glColorMask(0, 1, 0, 1);
-	sprite2->visit();
+	auto listener = EventListenerTouchOneByOne::create();
+	listener->setSwallowTouches(true);
+	listener->onTouchBegan = CC_CALLBACK_2(HelloWorld::onTouchBegan, this);
+	listener->onTouchMoved = CC_CALLBACK_2(HelloWorld::onTouchMoved, this);
+	listener->onTouchEnded = CC_CALLBACK_2(HelloWorld::onTouchEnded, this);
+	listener->onTouchCancelled = CC_CALLBACK_2(HelloWorld::onTouchCancelled, this);
 
-	Color4B *buffer = (Color4B *)malloc(sizeof(Color4B) * numPixels);
-	glReadPixels(x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+	EventDispatcher* dispatcher = Director::getInstance()->getEventDispatcher();
+	dispatcher->addEventListenerWithSceneGraphPriority(listener, this);
 
-	glColorMask(1, 1, 1, 1);
-	pRT->end();
-	//pRT->setPosition(this->getAnchorPointInPoints().x - 150, this->getAnchorPointInPoints().y - 150);
-	//this->addChild(pRT, 2);
+	myBlock_ = Block::create();
+	myBlock_->setPosition(100, 300);
+	myBlock_->setTag(Node_Tag::Tag_MyBlock);
+	this->addChild(myBlock_);
+	myBlock_->createBody_Box2d(Node_Tag::Tag_MyBlock, world_);
 
-	free(buffer);
+	Block* pTest = Block::create();
+	pTest->setPosition(300, 300);
+	pTest->setTag(Node_Tag::Tag_MyBlock);
+	this->addChild(pTest);
+	pTest->createBody_Box2d(Node_Tag::Tag_MyBlock, world_);
 
+	pTest = Block::create();
+	pTest->setPosition(500, 300);
+	pTest->setTag(Node_Tag::Tag_OtherBlock);
+	this->addChild(pTest);
+	pTest->createBody_Box2d(Node_Tag::Tag_OtherBlock, world_);
 
+	otherBlock_ = Block::create();
+	otherBlock_->setPosition(700, 300);
+	otherBlock_->setTag(Node_Tag::Tag_OtherBlock);
+	this->addChild(otherBlock_);
+	otherBlock_->createBody_Box2d(Node_Tag::Tag_OtherBlock, world_);
 
-    
     return true;
 }
 
@@ -136,3 +185,46 @@ void HelloWorld::menuCloseCallback(Ref* pSender)
     exit(0);
 #endif
 }
+
+void HelloWorld::draw( Renderer *renderer, const Mat4& transform, uint32_t flags )
+{
+	kmGLPushMatrix();
+	kmGLLoadMatrix(&transform);
+	GL::enableVertexAttribs(GL::VERTEX_ATTRIB_FLAG_POSITION);
+	world_->DrawDebugData();
+	kmGLPopMatrix();
+}
+
+void HelloWorld::tick( float dt )
+{
+	for (b2Body *b = world_->GetBodyList(); b; b = b->GetNext()) {
+		if (b->GetUserData() != NULL) {
+			Node *node = (Node*)b->GetUserData();
+			Vec2 pos = node->getParent()->convertToWorldSpace(node->getPosition());
+			pos = this->convertToNodeSpace(pos);
+			b->SetTransform(b2Vec2(SCREEN_TO_BOX2D(pos.x), SCREEN_TO_BOX2D(pos.y)), b->GetAngle());
+		}
+	}
+
+	world_->Step(dt, 8, 3);
+
+	//for (b2Body *b = world_->GetBodyList(); b; b = b->GetNext()) {
+	//	if (b->GetUserData() != NULL) {
+	//		Node *node = (Node*)b->GetUserData();
+	//		node->setPosition(node->getParent()->convertToNodeSpace(Vec2(BOX2D_TO_SCREEN(b->GetPosition().x), BOX2D_TO_SCREEN(b->GetPosition().y))));
+	//		node->setRotation(-1 * CC_RADIANS_TO_DEGREES(b->GetAngle()));
+	//	}
+	//}
+}
+
+void HelloWorld::onTouchEnded(Touch *pTouch, Event *pEvent)
+{
+	Vec2 touchPos = this->convertTouchToNodeSpace(pTouch);
+
+	MoveTo* pMoveTo = MoveTo::create(myBlock_->getPosition().distance(touchPos) / 200, touchPos);
+	myBlock_->runAction(pMoveTo);
+}
+
+
+
+
